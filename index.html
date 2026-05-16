@@ -42,12 +42,9 @@
   }
 
   #gameWrapper {
-    position: fixed;
-    top: 0;
-    left: 0;
+    position: relative;
     width: 100vw;
     height: 100vh;
-    height: 100dvh;
     overflow: hidden;
     touch-action: none;
   }
@@ -549,15 +546,9 @@
     .hud-score .value { font-size: 32px; }
     .life-icon { width: 24px; height: 24px; }
     .life-icon::after { font-size: 12px; }
-    .go-panel { width: 92%; padding: 24px 18px; }
+    .go-panel { width: 92%; }
     .btn-restart { font-size: 19px; padding: 11px 30px; }
-    .btn-start { font-size: 20px; padding: 12px 30px; letter-spacing: 2px; }
-    #pauseBtn { font-size: 12px; padding: 6px 14px; }
-    .game-logo { font-size: clamp(40px, 14vw, 80px); }
-    .logo-sub { font-size: 14px; }
-    .fruit-preview { font-size: 32px; margin-bottom: 20px; }
-    #startScreen { padding: 20px; }
-    .controls-hint { font-size: 10px; }
+    #pauseBtn { font-size: 12px; }
   }
 </style>
 </head>
@@ -955,10 +946,8 @@ function startGame() {
   paused = false;
   lastTime = performance.now();
 
-  if (!cameraStarted && !mouseFallbackActive) {
-    void initMediaPipe().catch(() => {
-      setupMouseFallback();
-    });
+  if (!cameraStarted) {
+    void initMediaPipe();
   }
 
   cancelAnimationFrame(animationFrameId);
@@ -1159,10 +1148,11 @@ function shadeColor(hex, amount) {
 }
 
 async function initMediaPipe() {
-  if (cameraStarted || mouseFallbackActive) return;
+  if (cameraStarted) return;
   if (typeof Hands === 'undefined' || typeof Camera === 'undefined') {
+    camStatusText.textContent = 'Touch/Mouse mode';
     setupMouseFallback();
-    throw new Error('MediaPipe unavailable');
+    return;
   }
 
   hands = new Hands({
@@ -1176,18 +1166,14 @@ async function initMediaPipe() {
   });
   hands.onResults(onHandResults);
 
-  const isMobile = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent);
-  const cameraConfig = isMobile
-    ? { width: 320, height: 240 }
-    : { width: 640, height: 480 };
-
   camera = new Camera(webcam, {
     onFrame: async () => {
       if (gameRunning && !paused) {
         await hands.send({ image: webcam });
       }
     },
-    ...cameraConfig,
+    width: 640,
+    height: 480,
   });
 
   try {
@@ -1196,10 +1182,8 @@ async function initMediaPipe() {
     cameraStarted = true;
     camStatusText.textContent = 'Active';
   } catch (error) {
-    console.warn('Camera failed, using touch/mouse mode:', error);
     camStatusText.textContent = 'Touch/Mouse mode';
     setupMouseFallback();
-    throw error;
   }
 }
 
@@ -1223,64 +1207,25 @@ function setupMouseFallback() {
   if (mouseFallbackActive) return;
   mouseFallbackActive = true;
 
-  const getPointerPos = event => {
+  const updateFromPointer = event => {
+    if (!gameRunning || paused) return;
     const rect = gameCanvas.getBoundingClientRect();
-    let x, y;
-    if (event.touches && event.touches.length > 0) {
-      x = event.touches[0].clientX - rect.left;
-      y = event.touches[0].clientY - rect.top;
-    } else if (event.clientX !== undefined) {
-      x = event.clientX - rect.left;
-      y = event.clientY - rect.top;
-    } else {
-      return null;
-    }
-    return { x: Math.max(0, Math.min(width, x)), y: Math.max(0, Math.min(height, y)) };
-  };
-
-  const updateFinger = pos => {
-    if (!pos || !gameRunning || paused) return;
-    if (!smoothFinger) smoothFinger = { x: pos.x, y: pos.y };
-    smoothFinger.x += (pos.x - smoothFinger.x) * 0.6;
-    smoothFinger.y += (pos.y - smoothFinger.y) * 0.6;
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    if (!smoothFinger) smoothFinger = { x, y };
+    smoothFinger.x += (x - smoothFinger.x) * 0.6;
+    smoothFinger.y += (y - smoothFinger.y) * 0.6;
     finger = { x: smoothFinger.x, y: smoothFinger.y };
     registerHandPoint(finger.x, finger.y);
   };
 
-  const onPointerDown = event => {
-    if (event.preventDefault) event.preventDefault();
-    try {
-      gameCanvas.setPointerCapture(event.pointerId);
-    } catch (e) {}
-    const pos = getPointerPos(event);
-    updateFinger(pos);
-  };
-
-  const onPointerMove = event => {
-    if (event.preventDefault) event.preventDefault();
-    const pos = getPointerPos(event);
-    updateFinger(pos);
-  };
-
-  const onPointerUp = () => {
-    finger = null;
-    smoothFinger = null;
-  };
-
-  gameCanvas.addEventListener('pointerdown', onPointerDown, { passive: false });
-  gameCanvas.addEventListener('pointermove', onPointerMove, { passive: false });
-  gameCanvas.addEventListener('pointerup', onPointerUp, { passive: false });
-  gameCanvas.addEventListener('pointercancel', onPointerUp, { passive: false });
-
-  gameCanvas.addEventListener('touchstart', onPointerDown, { passive: false });
-  gameCanvas.addEventListener('touchmove', onPointerMove, { passive: false });
-  gameCanvas.addEventListener('touchend', onPointerUp, { passive: false });
-  gameCanvas.addEventListener('touchcancel', onPointerUp, { passive: false });
-
-  gameCanvas.addEventListener('mousedown', onPointerDown, { passive: false });
-  gameCanvas.addEventListener('mousemove', onPointerMove, { passive: false });
-  gameCanvas.addEventListener('mouseup', onPointerUp, { passive: false });
-
+  gameCanvas.addEventListener('pointerdown', event => {
+    gameCanvas.setPointerCapture(event.pointerId);
+    updateFromPointer(event);
+  });
+  gameCanvas.addEventListener('pointermove', updateFromPointer);
+  gameCanvas.addEventListener('pointerup', () => {});
+  gameCanvas.addEventListener('pointercancel', () => {});
   camStatusText.textContent = 'Touch/Mouse mode';
 }
 
@@ -1315,11 +1260,6 @@ document.addEventListener('keydown', event => {
 });
 
 window.addEventListener('resize', resize);
-window.addEventListener('orientationchange', () => {
-  setTimeout(() => {
-    resize();
-  }, 100);
-});
 
 renderLives();
 highscoreHud.textContent = 'BEST: ' + highScore;
