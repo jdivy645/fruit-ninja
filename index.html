@@ -644,6 +644,7 @@ const FRUITS = [
 const MAX_LIVES = 3;
 const TRAIL_LIFE = 280;
 const HIGH_SCORE_KEY = 'fnhs';
+const GRAVITY = 0.38;
 
 let width = 0;
 let height = 0;
@@ -753,12 +754,21 @@ function shakeScreen() {
 function spawnFruit(isBomb = false) {
   const margin = 80;
   const def = FRUITS[Math.floor(Math.random() * FRUITS.length)];
+  const x = margin + Math.random() * Math.max(0, width - margin * 2);
+  // Launch hard enough to arc into the upper playfield (62%–84% of the
+  // screen height), regardless of viewport size. The fruit starts 80px
+  // below the bottom edge, so include that in the target rise. Peak rise
+  // for projectile motion is v² / (2·g), so solve for the needed speed.
+  const targetRise = height * (0.62 + Math.random() * 0.22) + 80;
+  const launchSpeed = Math.sqrt(2 * GRAVITY * targetRise);
+  // Gentle pull back toward centre so edge fruits don't drift off-screen
+  // during the now-longer airtime.
+  const inwardBias = ((width / 2 - x) / width) * 4;
   return {
-    x: margin + Math.random() * Math.max(0, width - margin * 2),
+    x,
     y: height + 80,
-    speedX: (Math.random() - 0.5) * 8,
-    speedY: -(12 + Math.random() * 6),
-    gravity: 0.2,
+    speedX: inwardBias + (Math.random() - 0.5) * 4,
+    speedY: -launchSpeed,
     radius: isBomb ? 30 : 40 + Math.random() * 20,
     rotation: Math.random() * 360,
     rotSpeed: (Math.random() - 0.5) * 3,
@@ -986,7 +996,7 @@ function loop(ts) {
     spawnWave();
   }
 
-  const gravity = 0.38;
+  const gravity = GRAVITY;
   for (const fruit of fruits) {
     fruit.speedY += gravity;
     fruit.x += fruit.speedX;
@@ -1160,9 +1170,13 @@ async function initMediaPipe() {
   });
   hands.setOptions({
     maxNumHands: 1,
-    modelComplexity: 1,
-    minDetectionConfidence: 0.7,
-    minTrackingConfidence: 0.7,
+    // Lite model (0) infers several times faster than the full model (1),
+    // which is the main cause of the tracking lag.
+    modelComplexity: 0,
+    minDetectionConfidence: 0.6,
+    // Lower tracking threshold keeps the hand locked frame-to-frame instead
+    // of re-running the slower detector, which smooths out the motion.
+    minTrackingConfidence: 0.5,
   });
   hands.onResults(onHandResults);
 
@@ -1172,8 +1186,10 @@ async function initMediaPipe() {
         await hands.send({ image: webcam });
       }
     },
-    width: 640,
-    height: 480,
+    // Fewer pixels per frame = faster inference. A single fingertip does not
+    // need 640×480.
+    width: 480,
+    height: 360,
   });
 
   try {
@@ -1194,9 +1210,24 @@ function onHandResults(results) {
     const targetX = width - (fingerTip.x * width);
     const targetY = fingerTip.y * height;
 
-    if (!smoothFinger) smoothFinger = { x: targetX, y: targetY };
-    smoothFinger.x += (targetX - smoothFinger.x) * 0.5;
-    smoothFinger.y += (targetY - smoothFinger.y) * 0.5;
+    if (!smoothFinger) {
+      smoothFinger = { x: targetX, y: targetY, px: targetX, py: targetY };
+    }
+
+    // Detection always lags the real hand by a frame or two. Estimate the
+    // fingertip's velocity from the last raw reading and extrapolate slightly
+    // ahead so the cursor catches up instead of trailing behind.
+    const vx = targetX - smoothFinger.px;
+    const vy = targetY - smoothFinger.py;
+    smoothFinger.px = targetX;
+    smoothFinger.py = targetY;
+    const predX = targetX + vx * 0.5;
+    const predY = targetY + vy * 0.5;
+
+    // Snappier follow (0.7) than before (0.5): less smoothing lag, while the
+    // prediction above keeps it from getting jittery.
+    smoothFinger.x += (predX - smoothFinger.x) * 0.7;
+    smoothFinger.y += (predY - smoothFinger.y) * 0.7;
 
     finger = { x: smoothFinger.x, y: smoothFinger.y };
     registerHandPoint(finger.x, finger.y);
